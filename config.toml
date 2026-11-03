@@ -1,7 +1,8 @@
 # Конфигурация анализатора зависимостей
 package_name = "serde"
-repo_url = "https://crates.io"
+repo_url = "https://index.crates.io"
 test_mode = false
 output_file = "graph.svg"
 ascii_tree = true
 max_depth = 3
+

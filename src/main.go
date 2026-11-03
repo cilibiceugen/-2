@@ -2,15 +2,16 @@
 package main
 
 import (
-	"Project(2)/config"
 	"flag"
 	"fmt"
 	"os"
+	"project2/src/cargo"
+	"project2/src/config"
 )
 
 const exitErrorCode = 1
 
-// main разбирает флаг командной строки, загружает конфигурацию и выводит параметры на экран.
+// main разбирает флаг командной строки, загружает конфигурацию и выводит прямые зависимости пакета.
 func main() {
 	configPath := flag.String("config", "config.toml", "Путь к файлу конфигурации TOML")
 	flag.Parse()
@@ -21,15 +22,23 @@ func main() {
 		os.Exit(exitErrorCode)
 	}
 
-	printConfig(cfg)
+	deps, err := cargo.FetchDirectDependencies(cfg.RepoURL, cfg.PackageName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка получения зависимостей: %v\n", err)
+		os.Exit(exitErrorCode)
+	}
+
+	printDependencies(cfg.PackageName, deps)
 }
 
-// printConfig выводит все шесть прочитанных параметров конфигурации в формате ключ-значение.
-func printConfig(cfg config.AppConfig) {
-	fmt.Printf("package_name: %s\n", cfg.PackageName)
-	fmt.Printf("repo_url: %s\n", cfg.RepoURL)
-	fmt.Printf("test_mode: %t\n", cfg.TestMode)
-	fmt.Printf("output_file: %s\n", cfg.OutputFile)
-	fmt.Printf("ascii_tree: %t\n", cfg.ASCIITree)
-	fmt.Printf("max_depth: %d\n", cfg.MaxDepth)
+// printDependencies выводит на экран список прямых зависимостей указанного пакета.
+func printDependencies(pkgName string, deps []string) {
+	fmt.Printf("Прямые зависимости пакета %s (%d):\n", pkgName, len(deps))
+	if len(deps) == 0 {
+		fmt.Println("  (зависимости отсутствуют)")
+		return
+	}
+	for _, dep := range deps {
+		fmt.Printf("  - %s\n", dep)
+	}
 }
