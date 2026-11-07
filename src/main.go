@@ -7,11 +7,14 @@ import (
 	"os"
 	"project2/src/cargo"
 	"project2/src/config"
+	"project2/src/graph"
+	"sort"
+	"strings"
 )
 
 const exitErrorCode = 1
 
-// main разбирает флаг командной строки, загружает конфигурацию и выводит прямые зависимости пакета.
+// main разбирает флаг командной строки, загружает конфигурацию и строит граф зависимостей.
 func main() {
 	configPath := flag.String("config", "config.toml", "Путь к файлу конфигурации TOML")
 	flag.Parse()
@@ -22,23 +25,51 @@ func main() {
 		os.Exit(exitErrorCode)
 	}
 
-	deps, err := cargo.FetchDirectDependencies(cfg.RepoURL, cfg.PackageName)
+	provider, err := createProvider(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка получения зависимостей: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Ошибка инициализации источника данных: %v\n", err)
 		os.Exit(exitErrorCode)
 	}
 
-	printDependencies(cfg.PackageName, deps)
+	depGraph, err := graph.BuildGraph(cfg.PackageName, cfg.MaxDepth, provider)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка построения графа: %v\n", err)
+		os.Exit(exitErrorCode)
+	}
+
+	printGraph(depGraph)
 }
 
-// printDependencies выводит на экран список прямых зависимостей указанного пакета.
-func printDependencies(pkgName string, deps []string) {
-	fmt.Printf("Прямые зависимости пакета %s (%d):\n", pkgName, len(deps))
-	if len(deps) == 0 {
-		fmt.Println("  (зависимости отсутствуют)")
-		return
+// createProvider выбирает источник зависимостей в зависимости от флага тестового режима.
+func createProvider(cfg config.AppConfig) (graph.DependencyProvider, error) {
+	if cfg.TestMode {
+		return graph.LoadTestRepository(cfg.RepoURL)
 	}
-	for _, dep := range deps {
-		fmt.Printf("  - %s\n", dep)
+	return func(pkg string) ([]string, error) {
+		return cargo.FetchDirectDependencies(cfg.RepoURL, pkg)
+	}, nil
+}
+
+// printGraph выводит построенный граф зависимостей в отсортированном виде.
+func printGraph(depGraph graph.DependencyGraph) {
+	fmt.Printf("Граф зависимостей для пакета %s:\n", depGraph.Root)
+	nodes := sortedKeys(depGraph.Edges)
+	for _, node := range nodes {
+		deps := depGraph.Edges[node]
+		if len(deps) == 0 {
+			fmt.Printf("  %s -> (нет зависимостей)\n", node)
+			continue
+		}
+		fmt.Printf("  %s -> %s\n", node, strings.Join(deps, ", "))
 	}
+}
+
+// sortedKeys возвращает отсортированный список ключей словаря графа для стабильного вывода.
+func sortedKeys(edges map[string][]string) []string {
+	keys := make([]string, 0, len(edges))
+	for k := range edges {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
