@@ -1,88 +1,93 @@
-// Package graph реализует построение графа зависимостей рекурсивным алгоритмом BFS.
+// Package graph реализует построение и анализ транзитивного графа зависимостей.
 package graph
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
 const (
-	initialDepth      = 0
-	depthStep         = 1
-	expectedPairParts = 2
-	pairSeparator     = ":"
-	depsSeparator     = ","
+	initialBuildDepth  = 0
+	testLinePartsCount = 2
+	testLineSeparator  = ":"
+	testDepsSeparator  = ","
 )
 
-// DependencyProvider определяет источник получения прямых зависимостей для указанного пакета.
-type DependencyProvider func(pkg string) ([]string, error)
+// DepFetcher определяет функцию получения прямых зависимостей для указанного пакета.
+type DepFetcher func(repoURL, pkgName string) ([]string, error)
 
-// DependencyGraph представляет построенный граф зависимостей в виде списков смежности.
-type DependencyGraph struct {
-	Root  string
-	Edges map[string][]string
+// BuildFromCargo строит транзитивный граф зависимостей из индекса Cargo с помощью рекурсивного BFS.
+func BuildFromCargo(
+	repoURL string,
+	rootPkg string,
+	maxDepth int,
+	fetch DepFetcher,
+) (map[string][]string, error) {
+	adj := make(map[string][]string)
+	visited := map[string]bool{rootPkg: true}
+
+	fetcher := func(pkg string) ([]string, error) {
+		return fetch(repoURL, pkg)
+	}
+
+	if err := bfsBuildRecursive([]string{rootPkg}, initialBuildDepth, maxDepth, visited, adj, fetcher); err != nil {
+		return nil, err
+	}
+	return adj, nil
 }
 
-// BuildGraph строит граф зависимостей от корневого пакета с помощью рекурсивного BFS.
-func BuildGraph(root string, maxDepth int, provider DependencyProvider) (DependencyGraph, error) {
-	graph := DependencyGraph{
-		Root:  root,
-		Edges: make(map[string][]string),
+// BuildFromTestFile читает описание тестового графа из файла и строит граф зависимостей рекурсивным BFS.
+func BuildFromTestFile(filePath, rootPkg string, maxDepth int) (map[string][]string, error) {
+	rawGraph, err := parseTestRepository(filePath)
+	if err != nil {
+		return nil, err
 	}
-	visited := map[string]bool{root: true}
-	currentLevel := []string{root}
+	if _, exists := rawGraph[rootPkg]; !exists {
+		return nil, fmt.Errorf("корневой пакет %s не найден в тестовом файле", rootPkg)
+	}
 
-	if err := recursiveBFS(&graph, currentLevel, visited, initialDepth, maxDepth, provider); err != nil {
-		return DependencyGraph{}, err
+	adj := make(map[string][]string)
+	visited := map[string]bool{rootPkg: true}
+	fetcher := func(pkg string) ([]string, error) {
+		return rawGraph[pkg], nil
 	}
-	return graph, nil
+
+	if err := bfsBuildRecursive([]string{rootPkg}, initialBuildDepth, maxDepth, visited, adj, fetcher); err != nil {
+		return nil, err
+	}
+	return adj, nil
 }
 
-// recursiveBFS выполняет рекурсивный поиск в ширину по уровням глубины от текущего слоя узлов.
-func recursiveBFS(
-	graph *DependencyGraph,
+// bfsBuildRecursive выполняет рекурсивный обход графа в ширину с учетом maxDepth и защитой от циклов.
+func bfsBuildRecursive(
 	level []string,
-	visited map[string]bool,
 	depth int,
 	maxDepth int,
-	provider DependencyProvider,
+	visited map[string]bool,
+	adj map[string][]string,
+	fetch func(string) ([]string, error),
 ) error {
 	if len(level) == 0 || depth >= maxDepth {
 		return nil
 	}
 
-	nextLevel, err := expandLevel(graph, level, visited, provider)
-	if err != nil {
-		return err
-	}
-
-	return recursiveBFS(graph, nextLevel, visited, depth+depthStep, maxDepth, provider)
-}
-
-// expandLevel запрашивает зависимости для всех пакетов текущего уровня и формирует следующий слой BFS.
-func expandLevel(
-	graph *DependencyGraph,
-	level []string,
-	visited map[string]bool,
-	provider DependencyProvider,
-) ([]string, error) {
 	var nextLevel []string
-
 	for _, pkg := range level {
-		deps, err := provider(pkg)
+		deps, err := fetch(pkg)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		graph.Edges[pkg] = deps
-		nextLevel = appendUnvisited(nextLevel, deps, visited)
+		adj[pkg] = appendSortedUnique(adj[pkg], deps)
+		nextLevel = collectUnvisited(deps, visited, nextLevel)
 	}
-	return nextLevel, nil
+	return bfsBuildRecursive(nextLevel, depth+depthIncrement, maxDepth, visited, adj, fetch)
 }
 
-// appendUnvisited добавляет еще не посещенные пакеты в следующий слой обхода и помечает их.
-func appendUnvisited(nextLevel []string, deps []string, visited map[string]bool) []string {
+// collectUnvisited отмечает непосещенные узлы и добавляет их в очередь следующего уровня обхода.
+func collectUnvisited(deps []string, visited map[string]bool, nextLevel []string) []string {
 	for _, dep := range deps {
 		if !visited[dep] {
 			visited[dep] = true
@@ -92,90 +97,57 @@ func appendUnvisited(nextLevel []string, deps []string, visited map[string]bool)
 	return nextLevel
 }
 
-// LoadTestRepository читает тестовый граф из файла формата "A: B, C" с именами из заглавных букв.
-func LoadTestRepository(filePath string) (DependencyProvider, error) {
-	file, err := os.Open(filePath)
+// appendSortedUnique объединяет списки зависимостей, сортирует их и удаляет дубликаты.
+func appendSortedUnique(existing, added []string) []string {
+	combined := append(existing, added...)
+	slices.Sort(combined)
+	return slices.Compact(combined)
+}
+
+// parseTestRepository считывает тестовый файл формата "A: B, C" в карту смежности.
+func parseTestRepository(path string) (map[string][]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка открытия тестового репозитория: %w", err)
 	}
 	defer file.Close()
 
-	repoMap, err := parseTestLines(file)
-	if err != nil {
-		return nil, err
-	}
-
-	return func(pkg string) ([]string, error) {
-		return repoMap[pkg], nil
-	}, nil
-}
-
-// parseTestLines построчно разбирает описание зависимостей тестового репозитория в словарь.
-func parseTestLines(file *os.File) (map[string][]string, error) {
-	repo := make(map[string][]string)
+	result := make(map[string][]string)
 	scanner := bufio.NewScanner(file)
-
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		pkg, deps, err := parseTestLine(line)
-		if err != nil {
+		if err := parseTestLine(scanner.Text(), result); err != nil {
 			return nil, err
 		}
-		repo[pkg] = deps
 	}
-	return repo, scanner.Err()
+	return result, scanner.Err()
 }
 
-// parseTestLine разбирает одну строку вида "A: B, C" и проверяет корректность имен пакетов.
-func parseTestLine(line string) (string, []string, error) {
-	parts := strings.SplitN(line, pairSeparator, expectedPairParts)
-	if len(parts) != expectedPairParts {
-		return "", nil, fmt.Errorf("неверный формат строки тестового графа: %s", line)
+// parseTestLine разбирает одну строку вида "A: B, C" и добавляет узел в карту смежности.
+func parseTestLine(rawLine string, result map[string][]string) error {
+	line := strings.TrimSpace(rawLine)
+	if line == "" {
+		return nil
 	}
-
-	pkg := strings.TrimSpace(parts[0])
-	if !isUpperLatin(pkg) {
-		return "", nil, fmt.Errorf("имя пакета в тестовом режиме должно быть из заглавных букв: %s", pkg)
+	parts := strings.SplitN(line, testLineSeparator, testLinePartsCount)
+	if len(parts) != testLinePartsCount {
+		return fmt.Errorf("некорректный формат строки в тестовом файле: %s", line)
 	}
-
-	deps, err := parseTargetList(parts[1])
-	if err != nil {
-		return "", nil, err
-	}
-	return pkg, deps, nil
+	node := strings.TrimSpace(parts[0])
+	result[node] = splitDependencies(parts[1])
+	return nil
 }
 
-// parseTargetList разбивает правую часть строки по запятым и проверяет имена зависимостей.
-func parseTargetList(rawTargets string) ([]string, error) {
-	trimmed := strings.TrimSpace(rawTargets)
+// splitDependencies разбивает правую часть строки тестового файла по запятым на имена пакетов.
+func splitDependencies(rawDeps string) []string {
+	trimmed := strings.TrimSpace(rawDeps)
 	if trimmed == "" {
-		return nil, nil
+		return nil
 	}
-
-	items := strings.Split(trimmed, depsSeparator)
 	var deps []string
-	for _, item := range items {
-		name := strings.TrimSpace(item)
-		if !isUpperLatin(name) {
-			return nil, fmt.Errorf("некорректное имя зависимости в тесте: %s", name)
-		}
-		deps = append(deps, name)
-	}
-	return deps, nil
-}
-
-// isUpperLatin проверяет, что строка не пуста и состоит только из заглавных латинских букв A-Z.
-func isUpperLatin(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 'A' || s[i] > 'Z' {
-			return false
+	for _, item := range strings.Split(trimmed, testDepsSeparator) {
+		if name := strings.TrimSpace(item); name != "" {
+			deps = append(deps, name)
 		}
 	}
-	return true
+	return deps
 }

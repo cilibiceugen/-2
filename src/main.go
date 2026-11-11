@@ -8,15 +8,16 @@ import (
 	"project2/src/cargo"
 	"project2/src/config"
 	"project2/src/graph"
-	"sort"
+	"slices"
 	"strings"
 )
 
 const exitErrorCode = 1
 
-// main разбирает флаг командной строки, загружает конфигурацию и строит граф зависимостей.
+// main разбирает флаги, строит граф зависимостей и выводит прямой граф и обратные зависимости.
 func main() {
 	configPath := flag.String("config", "config.toml", "Путь к файлу конфигурации TOML")
+	reverseTarget := flag.String("reverse", "", "Имя пакета для поиска обратных зависимостей")
 	flag.Parse()
 
 	cfg, err := config.LoadFromFile(*configPath)
@@ -25,51 +26,55 @@ func main() {
 		os.Exit(exitErrorCode)
 	}
 
-	provider, err := createProvider(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка инициализации источника данных: %v\n", err)
-		os.Exit(exitErrorCode)
-	}
-
-	depGraph, err := graph.BuildGraph(cfg.PackageName, cfg.MaxDepth, provider)
+	adj, err := loadDependencyGraph(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка построения графа: %v\n", err)
 		os.Exit(exitErrorCode)
 	}
 
-	printGraph(depGraph)
+	printGraph(cfg.PackageName, adj)
+	target := resolveReverseTarget(*reverseTarget, cfg.PackageName)
+	revDeps := graph.FindReverseDependencies(adj, target, cfg.MaxDepth)
+	printReverseDeps(target, revDeps)
 }
 
-// createProvider выбирает источник зависимостей в зависимости от флага тестового режима.
-func createProvider(cfg config.AppConfig) (graph.DependencyProvider, error) {
+// loadDependencyGraph строит граф из тестового файла или из индекса Cargo в зависимости от test_mode.
+func loadDependencyGraph(cfg config.AppConfig) (map[string][]string, error) {
 	if cfg.TestMode {
-		return graph.LoadTestRepository(cfg.RepoURL)
+		return graph.BuildFromTestFile(cfg.RepoURL, cfg.PackageName, cfg.MaxDepth)
 	}
-	return func(pkg string) ([]string, error) {
-		return cargo.FetchDirectDependencies(cfg.RepoURL, pkg)
-	}, nil
+	return graph.BuildFromCargo(cfg.RepoURL, cfg.PackageName, cfg.MaxDepth, cargo.FetchDirectDependencies)
 }
 
-// printGraph выводит построенный граф зависимостей в отсортированном виде.
-func printGraph(depGraph graph.DependencyGraph) {
-	fmt.Printf("Граф зависимостей для пакета %s:\n", depGraph.Root)
-	nodes := sortedKeys(depGraph.Edges)
-	for _, node := range nodes {
-		deps := depGraph.Edges[node]
-		if len(deps) == 0 {
-			fmt.Printf("  %s -> (нет зависимостей)\n", node)
-			continue
-		}
-		fmt.Printf("  %s -> %s\n", node, strings.Join(deps, ", "))
+// resolveReverseTarget возвращает имя пакета из флага или корневой пакет конфигурации по умолчанию.
+func resolveReverseTarget(flagVal, defaultPkg string) string {
+	if strings.TrimSpace(flagVal) != "" {
+		return strings.TrimSpace(flagVal)
 	}
+	return defaultPkg
 }
 
-// sortedKeys возвращает отсортированный список ключей словаря графа для стабильного вывода.
-func sortedKeys(edges map[string][]string) []string {
-	keys := make([]string, 0, len(edges))
-	for k := range edges {
+// printGraph выводит список смежности построенного графа зависимостей в отсортированном виде.
+func printGraph(root string, adj map[string][]string) {
+	fmt.Printf("Граф зависимостей для пакета %s:\n", root)
+	keys := make([]string, 0, len(adj))
+	for k := range adj {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
-	return keys
+	slices.Sort(keys)
+	for _, k := range keys {
+		fmt.Printf("  %s -> %s\n", k, strings.Join(adj[k], ", "))
+	}
+}
+
+// printReverseDeps выводит все пакеты, которые прямо или транзитивно зависят от target.
+func printReverseDeps(target string, revDeps []string) {
+	fmt.Printf("\nОбратные зависимости для пакета %s (%d):\n", target, len(revDeps))
+	if len(revDeps) == 0 {
+		fmt.Println("  (обратные зависимости отсутствуют)")
+		return
+	}
+	for _, dep := range revDeps {
+		fmt.Printf("  - %s\n", dep)
+	}
 }
