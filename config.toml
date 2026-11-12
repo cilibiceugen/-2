@@ -1,15 +1,21 @@
 # Конфигурация анализатора зависимостей
-#package_name = "serde"
-#repo_url = "https://index.crates.io"
-#test_mode = false
+package_name = "serde"
+repo_url = "https://index.crates.io"
+test_mode = false
+output_file = "graph.svg"
+ascii_tree = true
+max_depth = 3
+
+
+#package_name = "A"
+#repo_url = "test_repo.txt"
+#test_mode = true
 #output_file = "graph.svg"
 #ascii_tree = true
 #max_depth = 3
 
-
-package_name = "A"
-repo_url = "test_repo.txt"
-test_mode = true
-output_file = "graph.svg"
-ascii_tree = true
-max_depth = 3
+#serde
+#
+#thiserror
+#
+#log
